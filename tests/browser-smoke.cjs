@@ -3,7 +3,8 @@ const { chromium } = require('playwright');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const base = 'http://127.0.0.1:8010';
+const base = process.env.TEST_BASE_URL || 'http://127.0.0.1:8010';
+assert.match(base,/^http:\/\/127\.0\.0\.1:\d+$/,'Browser smoke must only use a disposable local server');
 const out = path.resolve('test-artifacts');
 const stamp = Date.now().toString(36);
 

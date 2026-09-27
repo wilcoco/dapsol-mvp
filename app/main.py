@@ -1,4 +1,5 @@
 import os
+import json
 import secrets
 import sqlite3
 import time
@@ -12,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from . import auth, domain as d, ai
+from . import auth, domain as d, ai, human_context
 from .db import initialize, connect, transaction, one, all_rows, uid, now
 
 ROOT = Path(__file__).parent
@@ -83,6 +84,8 @@ def create_app(database=None, testing=False):
             if not token or not secrets.compare_digest(token, expected):
                 return JSONResponse({"detail": "페이지를 새로고침한 뒤 다시 시도해 주세요."}, status_code=403)
             request.state.form = dict(form)
+            if form.getlist("source_choice"):
+                request.state.form["sources"] = " ".join(str(v) for v in form.getlist("source_choice"))
             # Commit rate accounting independently, including rejected writes and login failures.
             try:
                 with transaction(path) as db:
@@ -124,7 +127,7 @@ def create_app(database=None, testing=False):
     async def health():
         with read() as db:
             db.execute("SELECT 1").fetchone()
-        return {"status": "ok", "service": "dapsol-mvp", "version": "0.1.0"}
+        return {"status": "ok", "service": "dapsol-mvp", "version": "0.2.0"}
 
     @app.get("/")
     async def home(request: Request, q: str = "", scope: str = "public", waiting: bool = False):
@@ -192,6 +195,8 @@ def create_app(database=None, testing=False):
             if conversation:
                 c = conversation_for(db, user, conversation)
                 scope = c["scope"]
+                source_rows = human_context.for_conversation(db,user,conversation,scope)
+                source = " ".join(s["id"] for s in source_rows)
                 turns = all_rows(db,"SELECT * FROM turns WHERE conversation_id=? ORDER BY rowid",(conversation,))
                 prompts = [t["body"] for t in turns if t["role"] == "user"]
                 draft = {"title": prompts[0][:180] if prompts else "", "body": "\n\n".join(prompts)[:12000],
@@ -222,6 +227,9 @@ def create_app(database=None, testing=False):
                 r["investment_request"] = uid()
                 r["sources"] = d.sources_for(db,user,"target_revision",r["id"])
                 r["history"] = all_rows(db,"SELECT id,number,reason,created_at FROM revisions WHERE answer_id=? ORDER BY number DESC",(a["id"],))
+                r["checks"] = all_rows(db,"""SELECT rc.*,u.name author FROM reconfirmations rc
+                    JOIN users u ON u.id=rc.user_id WHERE rc.revision_id=? ORDER BY checked_at DESC""",(r["id"],))
+                r["age_days"] = human_context.observation_age(r["observed_at"],r["checks"][0]["checked_at"] if r["checks"] else None)
                 r["contributions"] = all_rows(db,"""SELECT c.*,u.name author,r.number version FROM contributions c
                     JOIN users u ON u.id=c.author_id JOIN revisions r ON r.id=c.revision_id
                     WHERE r.answer_id=? ORDER BY c.created_at""",(a["id"],))
@@ -318,6 +326,14 @@ def create_app(database=None, testing=False):
                     d.reject("추가 정보의 종류를 선택해 주세요.")
                 body = d.text_field(data,"body","추가 정보",6000,True)
                 db.execute("INSERT INTO contributions VALUES (?,?,?,?,?,?)",(uid(),rid,user["id"],kind,body,now()))
+            elif action == "reconfirm":
+                if user["id"] != r["author_id"] or r["number"] != r["latest_number"]:
+                    d.reject("작성자가 최신 답을 다시 확인할 수 있습니다.",403)
+                checked = d.observed(data)
+                if not checked or (r["observed_at"] and checked < r["observed_at"]):
+                    d.reject("원래 관찰일 이후에 다시 확인한 날짜를 입력해 주세요.")
+                note = d.text_field(data,"note","다시 확인한 내용",2000,True)
+                db.execute("INSERT INTO reconfirmations VALUES (?,?,?,?,?,?)",(uid(),rid,user["id"],checked,note,now()))
             elif action == "invest":
                 try:
                     amount = int(str(data.get("amount","")))
@@ -444,11 +460,16 @@ def create_app(database=None, testing=False):
         return c
 
     @app.get("/ai")
-    async def ai_page(request: Request, scope: str="public", q: str=""):
+    async def ai_page(request: Request, scope: str="public", q: str="", source: str=""):
         user = require(request)
         with read() as db:
             d.allowed_scope(db,user,scope)
-        return render(request,"ai.html",conversation=None,turns=[],scope=scope,prompt=q[:300])
+            options = human_context.candidates(db,user,q[:300],scope) if q else []
+            if source:
+                r=d.revision(db,user,source)
+                scope=r["scope"]
+                options=[r]
+        return render(request,"ai.html",conversation=None,turns=[],scope=scope,prompt=q[:300],source_options=options,source_rows=[])
 
     @app.post("/ai")
     async def ai_start(request: Request):
@@ -458,7 +479,11 @@ def create_app(database=None, testing=False):
         cid = uid()
         with transaction(path) as db:
             scope = d.allowed_scope(db,user,request.state.form.get("scope","public"))
+            ids=d.source_ids(request.state.form)
+            d.check_sources(db,user,scope,ids)
             db.execute("INSERT INTO conversations VALUES (?,?,?,?)",(cid,user["id"],scope,now()))
+            for rid in ids:
+                db.execute("INSERT INTO conversation_sources VALUES (?,?)",(cid,rid))
         return await ai_turn(request,cid)
 
     @app.get("/ai/{cid}")
@@ -467,7 +492,11 @@ def create_app(database=None, testing=False):
         with read() as db:
             c = conversation_for(db,user,cid)
             turns = all_rows(db,"SELECT * FROM turns WHERE conversation_id=? ORDER BY rowid",(cid,))
-        return render(request,"ai.html",conversation=c,turns=turns,scope=c["scope"],prompt="")
+            source_rows=human_context.for_conversation(db,user,cid,c["scope"])
+            for turn in turns:
+                snapshot=one(db,"SELECT snapshot FROM turn_context WHERE turn_id=?",(turn["id"],))
+                turn["references"]=json.loads(snapshot["snapshot"]) if snapshot else []
+        return render(request,"ai.html",conversation=c,turns=turns,scope=c["scope"],prompt="",source_options=[],source_rows=source_rows)
 
     @app.post("/ai/{cid}")
     async def ai_turn(request: Request, cid: str):
@@ -479,22 +508,28 @@ def create_app(database=None, testing=False):
             d.reject("이 대화를 AI 제공자에게 전송하는 데 동의해 주세요.")
         with transaction(path) as db:
             c = conversation_for(db,user,cid)
+            source_rows = human_context.for_conversation(db,user,cid,c["scope"])
             turns = all_rows(db,"SELECT * FROM turns WHERE conversation_id=? ORDER BY rowid",(cid,))
             if len(turns) >= 20:
                 d.reject("한 대화는 10회까지입니다. 남은 질문을 정리해 사람에게 물어보세요.")
             auth.throttle(db,"ai:"+user["id"],20,86400)
             expected = len(turns)
+            context_snapshot = human_context.format_context(source_rows)
         try:
-            reply = await ai.respond(turns + [{"role":"user","body":prompt}])
+            reply = await ai.respond(turns + [{"role":"user","body":prompt}],source_rows)
         except Exception:
             d.reject("AI 응답을 받지 못했습니다. 잠시 후 다시 시도하거나 사람에게 질문해 주세요.",503)
         with transaction(path) as db:
             conversation_for(db,user,cid)
+            human_context.for_conversation(db,user,cid,c["scope"])
             count = one(db,"SELECT COUNT(*) n FROM turns WHERE conversation_id=?",(cid,))["n"]
             if count != expected:
                 d.reject("다른 창에서 대화가 진행되었습니다. 새로고침해 주세요.",409)
             for role,body in (("user",prompt),("assistant",reply)):
-                db.execute("INSERT INTO turns VALUES (?,?,?,?,?)",(uid(),cid,role,body,now()))
+                tid=uid()
+                db.execute("INSERT INTO turns VALUES (?,?,?,?,?)",(tid,cid,role,body,now()))
+                if role == "assistant":
+                    db.execute("INSERT INTO turn_context VALUES (?,?)",(tid,context_snapshot))
         return redirect("/ai/"+cid)
 
     return app

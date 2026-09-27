@@ -116,6 +116,19 @@ CREATE TABLE IF NOT EXISTS turns (
  role TEXT NOT NULL CHECK(role IN ('user','assistant')), body TEXT NOT NULL,
  created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reconfirmations (
+ id TEXT PRIMARY KEY, revision_id TEXT NOT NULL REFERENCES revisions,
+ user_id TEXT NOT NULL REFERENCES users, checked_at TEXT NOT NULL,
+ note TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS conversation_sources (
+ conversation_id TEXT NOT NULL REFERENCES conversations,
+ revision_id TEXT NOT NULL REFERENCES revisions,
+ PRIMARY KEY(conversation_id,revision_id)
+);
+CREATE TABLE IF NOT EXISTS turn_context (
+ turn_id TEXT PRIMARY KEY REFERENCES turns, snapshot TEXT NOT NULL
+);
 """
 
 

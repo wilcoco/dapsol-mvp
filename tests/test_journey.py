@@ -213,7 +213,7 @@ def test_oauth_missing_configuration_and_stable_provider_identity(app,monkeypatc
 def test_ai_handoff_is_private_and_reviewed(app,monkeypatch):
     from app import ai
     monkeypatch.setattr(ai,"available",lambda:True)
-    async def answer(turns):
+    async def answer(turns, sources=None):
         return "AI의 임시 제안입니다. 현장 확인이 필요합니다."
     monkeypatch.setattr(ai,"respond",answer)
     a,b=client(app,"asker"),client(app,"other")
@@ -278,7 +278,7 @@ def test_origin_and_future_observations_are_rejected(app):
 def test_ai_group_revocation_and_no_auto_publication(app,monkeypatch):
     from app import ai
     monkeypatch.setattr(ai,"available",lambda:True)
-    async def answer(turns):
+    async def answer(turns, sources=None):
         return "기밀 대화"
     monkeypatch.setattr(ai,"respond",answer)
     a,b=client(app,"owner"),client(app,"member")

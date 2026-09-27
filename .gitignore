@@ -10,3 +10,4 @@ data/
 *.db-*
 node_modules/
 test-artifacts/
+.agents/
