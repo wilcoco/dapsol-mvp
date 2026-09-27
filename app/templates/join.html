@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% from 'macros.html' import csrf_field %}{% block content %}<div class="narrow"><span class="eyebrow">그룹 초대</span><h1>{{invite.name}}</h1><p>이 그룹의 질문과 경험을 함께 읽고 보탤 수 있습니다.</p><form method="post">{{csrf_field(csrf)}}<button class="dark">{{user.name}} 계정으로 참여하기</button></form></div>{% endblock %}

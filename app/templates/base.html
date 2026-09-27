@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="오늘 내가 찾고 만든 답이 다음 사람의 길이 됩니다. 질문, 경험, 적용 결과가 함께 남는 답설.">
+<title>{% block title %}답설 · 다음 사람의 길{% endblock %}</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<body><header class="top"><a class="brand" href="/" aria-label="답설 홈"><span class="mark">◒</span> 답설 <span class="pilot">MVP</span></a>
+<nav aria-label="주 메뉴"><a href="/?waiting=true">답변할 질문</a><a href="/new?kind=knowledge">내 경험 쓰기</a><a href="/groups">우리 그룹</a>
+{% if user %}<a href="/me" class="account">{{user.name}}</a><form action="/logout" method="post" class="inline"><input type="hidden" name="csrf" value="{{csrf}}"><button class="text-button">로그아웃</button></form>{% else %}<a class="button small dark" href="/login">시작하기</a>{% endif %}</nav></header>
+<main>{% block content %}{% endblock %}</main><footer><a class="brand" href="/">◒ 답설</a><span>오늘 남긴 발자국이, 다음 사람의 길이 됩니다.</span><a href="/about">답설의 약속 · MVP 범위</a></footer></body></html>
